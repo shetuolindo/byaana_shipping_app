@@ -9,6 +9,7 @@ import {
   formatDateTime,
   formatLabel,
   formatMoney,
+  getNullableOrderDetailDisplay,
   getOrderDisplayNumber,
 } from "@/modules/orders/order-detail-format";
 
@@ -23,6 +24,7 @@ export default async function OrderDetailPage({ params }: OrderDetailPageProps) 
   if (!order) notFound();
 
   const orderNumber = getOrderDisplayNumber(order);
+  const nullableDisplay = getNullableOrderDetailDisplay(order);
 
   return (
     <div className="space-y-7">
@@ -92,11 +94,11 @@ export default async function OrderDetailPage({ params }: OrderDetailPageProps) 
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {order.items.map((item) => (
+                    {order.items.map((item, index) => (
                       <tr key={item.id}>
                         <td className="px-5 py-4 font-medium text-slate-900">{item.name}</td>
                         <td className="px-5 py-4 text-slate-600">
-                          <div>{item.sku || "—"}</div>
+                          <div>{nullableDisplay.itemSkus[index]}</div>
                           {item.sgsSku && <div className="mt-1 text-xs text-slate-400">SGS: {item.sgsSku}</div>}
                         </td>
                         <td className="px-5 py-4 text-right tabular-nums text-slate-700">{item.quantity}</td>
@@ -129,7 +131,7 @@ export default async function OrderDetailPage({ params }: OrderDetailPageProps) 
           <OrderActions orderId={order.id} status={order.internalStatus} />
 
           <DetailSection title="Customer">
-            <InfoStack label="Name">{order.customerName}</InfoStack>
+            <InfoStack label="Name">{nullableDisplay.customerName}</InfoStack>
             <InfoStack label="Email">{order.customerEmail ?? "—"}</InfoStack>
             <InfoStack label="Phone">{order.customerPhone ?? "—"}</InfoStack>
           </DetailSection>
@@ -137,13 +139,13 @@ export default async function OrderDetailPage({ params }: OrderDetailPageProps) 
           <DetailSection title="Shipping address">
             {order.address ? (
               <address className="space-y-1 text-sm not-italic leading-6 text-slate-700">
-                <p className="font-medium text-slate-900">{order.address.name}</p>
+                <p className="font-medium text-slate-900">{nullableDisplay.address?.name}</p>
                 {order.address.company && <p>{order.address.company}</p>}
-                <p>{order.address.address1}</p>
+                <p>{nullableDisplay.address?.address1}</p>
                 {order.address.address2 && <p>{order.address.address2}</p>}
                 {order.address.district && <p>{order.address.district}</p>}
                 <p>{[order.address.city, order.address.province, order.address.postalCode].filter(Boolean).join(", ") || "—"}</p>
-                <p>{order.address.countryCode}</p>
+                <p>{nullableDisplay.address?.countryCode}</p>
                 {order.address.phone && <p className="pt-2">Phone: {order.address.phone}</p>}
                 {order.address.email && <p className="break-all">Email: {order.address.email}</p>}
               </address>

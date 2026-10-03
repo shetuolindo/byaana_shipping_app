@@ -65,35 +65,40 @@ model Shop {
 }
 
 model Order {
-  id                 String               @id @default(cuid())
-  orderNumber        String               @unique
-  shopId             String?
-  parentOrderId      String?
-  source             OrderSource
-  internalStatus     OrderStatus          @default(NEW)
-  shopifyOrderId     String?              @unique
-  shopifyOrderNumber String?
-  externalCreatedAt  DateTime?
-  customerName       String
-  customerEmail      String?
-  customerPhone      String?
-  currency           String?
-  subtotal           Decimal?             @db.Decimal(12, 2)
-  shippingAmount     Decimal?             @db.Decimal(12, 2)
-  taxAmount          Decimal?             @db.Decimal(12, 2)
-  totalAmount        Decimal?             @db.Decimal(12, 2)
-  notes              String?
-  holdReason         String?
-  errorMessage       String?
-  shop               Shop?                @relation(fields: [shopId], references: [id], onDelete: SetNull)
-  parentOrder        Order?               @relation("OrderReplacements", fields: [parentOrderId], references: [id], onDelete: SetNull)
-  replacements       Order[]              @relation("OrderReplacements")
-  address            Address?
-  items              OrderItem[]
-  shipments          Shipment[]
-  statusHistory      OrderStatusHistory[]
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
+  id                       String               @id @default(cuid())
+  orderNumber              String               @unique
+  shopId                   String?
+  parentOrderId            String?
+  source                   OrderSource
+  internalStatus           OrderStatus          @default(NEW)
+  shopifyOrderId           String?              @unique
+  shopifyOrderNumber       String?
+  externalCreatedAt        DateTime?
+  shopifyUpdatedAt         DateTime?
+  shopifyFinancialStatus   String?
+  shopifyFulfillmentStatus String?
+  shopifyCancelledAt       DateTime?
+  shopifyCancelReason      String?
+  customerName             String?
+  customerEmail            String?
+  customerPhone            String?
+  currency                 String?
+  subtotal                 Decimal?             @db.Decimal(12, 2)
+  shippingAmount           Decimal?             @db.Decimal(12, 2)
+  taxAmount                Decimal?             @db.Decimal(12, 2)
+  totalAmount              Decimal?             @db.Decimal(12, 2)
+  notes                    String?
+  holdReason               String?
+  errorMessage             String?
+  shop                     Shop?                @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  parentOrder              Order?               @relation("OrderReplacements", fields: [parentOrderId], references: [id], onDelete: SetNull)
+  replacements             Order[]              @relation("OrderReplacements")
+  address                  Address?
+  items                    OrderItem[]
+  shipments                Shipment[]
+  statusHistory            OrderStatusHistory[]
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
 
   @@index([shopId])
   @@index([parentOrderId])
@@ -108,15 +113,15 @@ model Order {
 model Address {
   id          String   @id @default(cuid())
   orderId     String   @unique
-  name        String
+  name        String?
   company     String?
   phone       String?
   email       String?
-  countryCode String
+  countryCode String?
   province    String?
   city        String?
   district    String?
-  address1    String
+  address1    String?
   address2    String?
   postalCode  String?
   order       Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
@@ -128,7 +133,7 @@ model OrderItem {
   id                String   @id @default(cuid())
   orderId           String
   shopifyLineItemId String?
-  sku               String
+  sku               String?
   sgsSku            String?
   name              String
   quantity          Int
@@ -138,6 +143,7 @@ model OrderItem {
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
+  @@unique([orderId, shopifyLineItemId])
   @@index([orderId])
 }
 

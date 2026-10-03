@@ -1,7 +1,8 @@
 import "server-only";
 
-import { Prisma } from "@prisma/client";
+import { OrderSource, Prisma } from "@prisma/client";
 import prisma from "@/lib/prisma";
+import { selectChronologicalOrderPage, type ChronologicalDirection } from "./order-list-ordering";
 import { ORDER_PAGE_SIZE, type OrderListParams } from "./order-list-params";
 
 const orderListSelect = {
@@ -14,6 +15,7 @@ const orderListSelect = {
   internalStatus: true,
   currency: true,
   totalAmount: true,
+  externalCreatedAt: true,
   createdAt: true,
   items: { select: { quantity: true } },
   shipments: { select: { id: true, carrier: true, trackingNumber: true }, orderBy: { createdAt: "desc" } },
@@ -45,11 +47,46 @@ export function buildOrderWhere(params: OrderListParams): Prisma.OrderWhereInput
 
 function orderByFor(sort: OrderListParams["sort"]): Prisma.OrderOrderByWithRelationInput[] {
   switch (sort) {
-    case "oldest": return [{ createdAt: "asc" }, { id: "asc" }];
     case "total_desc": return [{ totalAmount: "desc" }, { createdAt: "desc" }, { id: "desc" }];
     case "total_asc": return [{ totalAmount: "asc" }, { createdAt: "desc" }, { id: "desc" }];
     default: return [{ createdAt: "desc" }, { id: "desc" }];
   }
+}
+
+async function listChronologically(
+  where: Prisma.OrderWhereInput,
+  direction: ChronologicalDirection,
+  skip: number,
+  take: number,
+) {
+  const candidateLimit = skip + take;
+  const [shopifyWithSourceDate, shopifyWithoutSourceDate, localOrders] = await Promise.all([
+    prisma.order.findMany({
+      where: { AND: [where, { source: OrderSource.SHOPIFY, externalCreatedAt: { not: null } }] },
+      select: orderListSelect,
+      orderBy: [{ externalCreatedAt: direction }, { createdAt: direction }, { id: direction }],
+      take: candidateLimit,
+    }),
+    prisma.order.findMany({
+      where: { AND: [where, { source: OrderSource.SHOPIFY, externalCreatedAt: null }] },
+      select: orderListSelect,
+      orderBy: [{ createdAt: direction }, { id: direction }],
+      take: candidateLimit,
+    }),
+    prisma.order.findMany({
+      where: { AND: [where, { source: { in: [OrderSource.MANUAL, OrderSource.REPLACEMENT] } }] },
+      select: orderListSelect,
+      orderBy: [{ createdAt: direction }, { id: direction }],
+      take: candidateLimit,
+    }),
+  ]);
+
+  return selectChronologicalOrderPage(
+    [shopifyWithSourceDate, shopifyWithoutSourceDate, localOrders],
+    direction,
+    skip,
+    take,
+  );
 }
 
 export async function listOrders(params: OrderListParams) {
@@ -57,13 +94,16 @@ export async function listOrders(params: OrderListParams) {
   const totalCount = await prisma.order.count({ where });
   const totalPages = Math.max(1, Math.ceil(totalCount / ORDER_PAGE_SIZE));
   const currentPage = Math.min(params.page, totalPages);
-  const orders = await prisma.order.findMany({
-    where,
-    select: orderListSelect,
-    orderBy: orderByFor(params.sort),
-    skip: (currentPage - 1) * ORDER_PAGE_SIZE,
-    take: ORDER_PAGE_SIZE,
-  });
+  const skip = (currentPage - 1) * ORDER_PAGE_SIZE;
+  const orders = params.sort === "newest" || params.sort === "oldest"
+    ? await listChronologically(where, params.sort === "newest" ? "desc" : "asc", skip, ORDER_PAGE_SIZE)
+    : await prisma.order.findMany({
+        where,
+        select: orderListSelect,
+        orderBy: orderByFor(params.sort),
+        skip,
+        take: ORDER_PAGE_SIZE,
+      });
   return {
     orders, totalCount, totalPages, currentPage,
     rangeStart: totalCount === 0 ? 0 : (currentPage - 1) * ORDER_PAGE_SIZE + 1,

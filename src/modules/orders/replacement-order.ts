@@ -58,21 +58,21 @@ export function replacementOrderCreationContext(originalOrderId: string) {
 
 export function replacementOrderFormValues(original: ReplacementOrderOriginal): InternalOrderFormValues {
   return {
-    customerName: original.customerName,
+    customerName: original.customerName ?? "",
     customerEmail: original.customerEmail ?? "",
     customerPhone: original.customerPhone ?? "",
-    recipientName: original.address?.name ?? original.customerName,
+    recipientName: original.address?.name ?? original.customerName ?? "",
     address1: original.address?.address1 ?? "",
     address2: original.address?.address2 ?? "",
     city: original.address?.city ?? "",
     province: original.address?.province ?? "",
     postalCode: original.address?.postalCode ?? "",
-    countryCode: original.address?.countryCode ?? "GB",
+    countryCode: original.address?.countryCode ?? "",
     currency: original.currency ?? "GBP",
     notes: [`Replacement for ${original.orderNumber}`, original.notes ? `Original notes:\n${original.notes}` : ""].filter(Boolean).join("\n\n"),
     items: original.items.map((item) => ({
       name: item.name,
-      sku: item.sku,
+      sku: item.sku ?? "",
       quantity: String(item.quantity),
       unitPrice: item.unitPrice?.toFixed(2) ?? "0.00",
     })),

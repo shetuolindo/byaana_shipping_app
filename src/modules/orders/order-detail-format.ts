@@ -2,6 +2,30 @@ type DecimalValue = {
   toFixed(decimalPlaces: number): string;
 };
 
+type NullableOrderDetailFields = {
+  customerName: string | null;
+  address: {
+    name: string | null;
+    countryCode: string | null;
+    address1: string | null;
+  } | null;
+  items: Array<{ sku: string | null }>;
+};
+
+export function getNullableOrderDetailDisplay(order: NullableOrderDetailFields) {
+  return {
+    customerName: order.customerName ?? "—",
+    address: order.address === null
+      ? null
+      : {
+          name: order.address.name ?? "—",
+          countryCode: order.address.countryCode ?? "—",
+          address1: order.address.address1 ?? "—",
+        },
+    itemSkus: order.items.map((item) => item.sku ?? "—"),
+  };
+}
+
 export function getOrderDisplayNumber(order: {
   orderNumber: string;
 }) {

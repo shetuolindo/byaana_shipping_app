@@ -91,8 +91,13 @@ Order
 - shopifyOrderId?       UNIQUE where appropriate
 - shopifyOrderNumber?
 - externalCreatedAt?
+- shopifyUpdatedAt?
+- shopifyFinancialStatus?
+- shopifyFulfillmentStatus?
+- shopifyCancelledAt?
+- shopifyCancelReason?
 
-- customerName
+- customerName?
 - customerEmail?
 - customerPhone?
 
@@ -122,15 +127,15 @@ Prefer an order snapshot rather than a mutable customer address.
 Address
 - id
 - orderId               UNIQUE FK → Order
-- name
+- name?
 - company?
 - phone?
 - email?
-- countryCode
+- countryCode?
 - province?
 - city?
 - district?
-- address1
+- address1?
 - address2?
 - postalCode?
 - createdAt
@@ -146,7 +151,7 @@ OrderItem
 - id
 - orderId               FK → Order
 - shopifyLineItemId?
-- sku
+- sku?
 - sgsSku?
 - name
 - quantity
@@ -157,6 +162,15 @@ OrderItem
 ```
 
 For SGS processing, each required line must resolve to a valid SGS SKU.
+
+Shopify can supply incomplete recipient data and line items without a
+SKU. Preserve those missing values as `null`; manual-order validation
+and carrier-processing validation remain stricter.
+
+For Shopify line-item synchronization, enforce uniqueness on
+`(orderId, shopifyLineItemId)`. PostgreSQL permits multiple rows with a
+null `shopifyLineItemId`, while rejecting duplicate non-null Shopify
+line-item IDs within the same order.
 
 If SKU mapping becomes more complex, introduce a dedicated
 mapping/product table later instead of overloading `OrderItem`.

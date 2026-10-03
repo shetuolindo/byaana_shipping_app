@@ -39,7 +39,7 @@ export function OrdersTable({ orders, hasFilters }: { orders: OrderListRow[]; ha
             return (
               <tr key={order.id} className="hover:bg-slate-50/80">
                 <td className="max-w-48 px-4 py-4 align-top"><Link href={`/orders/${encodeURIComponent(order.id)}`} className="block truncate font-semibold text-slate-900 hover:underline" title={getOrderDisplayNumber(order)}>{getOrderDisplayNumber(order)}</Link></td>
-                <td className="px-4 py-4 align-top"><p className="font-medium text-slate-900">{order.customerName}</p><p className="mt-1 max-w-52 truncate text-xs text-slate-500">{order.customerEmail ?? "No email"}</p></td>
+                <td className="px-4 py-4 align-top"><p className="font-medium text-slate-900">{order.customerName ?? "Name unavailable"}</p><p className="mt-1 max-w-52 truncate text-xs text-slate-500">{order.customerEmail ?? "No email"}</p></td>
                 <td className="px-4 py-4 align-top"><OrderBadge kind="source" value={order.source} /></td>
                 <td className="px-4 py-4 align-top"><OrderBadge kind="status" value={order.internalStatus} /></td>
                 <td className="px-4 py-4 align-top tabular-nums text-slate-700">{itemQuantity}</td>

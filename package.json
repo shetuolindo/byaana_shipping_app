@@ -3,11 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "predev": "prisma generate",
     "dev": "next dev",
+    "prebuild": "prisma generate",
     "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint .",
-    "db:seed": "node --experimental-strip-types prisma/seed.ts"
+    "db:seed": "node --experimental-strip-types prisma/seed.ts",
+    "shopify:diagnose": "node --env-file=.env --experimental-strip-types scripts/diagnose-shopify-orders.ts",
+    "shopify:import": "node --env-file=.env --experimental-strip-types scripts/import-shopify-orders.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.12.0",

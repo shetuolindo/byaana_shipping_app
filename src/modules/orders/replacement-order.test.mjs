@@ -63,3 +63,32 @@ test("shared validation requires at least one valid replacement item", () => {
     items: [{ name: "Widget", sku: "SKU-1", quantity: "0", unitPrice: "12.30" }],
   }).success, false);
 });
+
+test("prefills nullable Shopify recipient and SKU fields without fabricating values", () => {
+  const values = replacementOrderFormValues({
+    id: "original-123",
+    orderNumber: "SHOP-1002",
+    customerName: null,
+    customerEmail: null,
+    customerPhone: null,
+    currency: "GBP",
+    notes: null,
+    address: {
+      name: null,
+      address1: null,
+      address2: null,
+      city: null,
+      province: null,
+      postalCode: null,
+      countryCode: null,
+    },
+    items: [{ name: "Widget", sku: null, quantity: 1, unitPrice: null }],
+  });
+
+  assert.equal(values.customerName, "");
+  assert.equal(values.recipientName, "");
+  assert.equal(values.address1, "");
+  assert.equal(values.countryCode, "");
+  assert.equal(values.items[0]?.sku, "");
+  assert.equal(manualOrderSchema.safeParse(values).success, false);
+});
