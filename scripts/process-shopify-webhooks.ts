@@ -1,13 +1,7 @@
 import { z } from "zod";
 import prisma from "../src/lib/prisma.ts";
-import { fetchShopifyOrderById } from "../src/modules/shopify/order-source.ts";
-import { createPrismaShopifyOrderPersistence } from "../src/modules/shopify/order-persistence.ts";
-import { decryptShopifyAccessToken } from "../src/modules/shopify/token-encryption.ts";
-import {
-  runShopifyWebhookOneShot,
-  ShopifyWebhookProcessingError,
-} from "../src/modules/shopify/webhook-processor.ts";
-import { createPrismaShopifyWebhookProcessorStore } from "../src/modules/shopify/webhook-processor-store.ts";
+import { createPrismaShopifyWebhookProcessorDependencies } from "../src/modules/shopify/webhook-processor-dependencies.ts";
+import { runShopifyWebhookOneShot } from "../src/modules/shopify/webhook-processor.ts";
 
 const environmentSchema = z.object({
   DATABASE_URL: z.string().url(),
@@ -34,35 +28,12 @@ async function main() {
 
   const environment = environmentSchema.parse(process.env);
   assertLocalDatabase(environment.DATABASE_URL);
-  const store = createPrismaShopifyWebhookProcessorStore(prisma);
-  const persistence = createPrismaShopifyOrderPersistence(prisma);
   const summary = await runShopifyWebhookOneShot({
     limit: requestedLimit(process.argv.slice(2)),
-    dependencies: {
-      store,
-      persistence,
-      async fetchOrder(event) {
-        if (!event.shop.shopifyAccessTokenEncrypted) {
-          throw new ShopifyWebhookProcessingError("CONFIGURATION_ERROR", false);
-        }
-        let accessToken: string;
-        try {
-          accessToken = decryptShopifyAccessToken(
-            event.shop.shopifyAccessTokenEncrypted,
-            event.shop.shopifyShopDomain,
-            environment.SHOPIFY_TOKEN_ENCRYPTION_KEY,
-          );
-        } catch {
-          throw new ShopifyWebhookProcessingError("CONFIGURATION_ERROR", false);
-        }
-        return fetchShopifyOrderById({
-          shopDomain: event.shop.shopifyShopDomain,
-          accessToken,
-          apiVersion: event.apiVersion,
-          shopifyOrderId: event.resourceId,
-        });
-      },
-    },
+    dependencies: createPrismaShopifyWebhookProcessorDependencies({
+      client: prisma,
+      tokenEncryptionKey: environment.SHOPIFY_TOKEN_ENCRYPTION_KEY,
+    }),
   });
   console.log(JSON.stringify({ ...summary, localOnly: true }));
   if (summary.failed > 0) process.exitCode = 1;

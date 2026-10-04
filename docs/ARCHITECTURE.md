@@ -320,7 +320,8 @@ Also test replacement creation and duplicate-click protection.
 V1 production needs:
 
 ``` text
-Next.js application
+Next.js web process
+Shopify webhook worker process
 PostgreSQL
 HTTPS domain
 environment secrets
@@ -328,6 +329,16 @@ database backups
 application/error logs
 public webhook endpoints
 ```
+
+The web and worker processes run from the same application artifact. The
+webhook endpoint verifies and durably records Shopify events, then returns
+quickly. A single separately supervised worker drains eligible events and
+polls PostgreSQL every five seconds while idle. PostgreSQL remains the durable
+queue; no external queue service is required.
+
+The worker must finish its current event and disconnect from PostgreSQL on
+graceful shutdown. Stale interrupted claims remain recoverable after a process
+crash or restart.
 
 Choose hosting later. Do not couple application architecture to a
 specific host prematurely.

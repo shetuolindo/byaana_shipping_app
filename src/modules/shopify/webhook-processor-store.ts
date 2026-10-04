@@ -34,16 +34,22 @@ export function createPrismaShopifyWebhookProcessorStore(
       return client.$transaction(async (tx) => {
         const eligibility = {
           provider: "SHOPIFY",
-          attemptCount: { lt: SHOPIFY_WEBHOOK_MAX_ATTEMPTS },
           OR: [
-            { status: "PENDING" },
+            {
+              status: "PENDING",
+              attemptCount: { lt: SHOPIFY_WEBHOOK_MAX_ATTEMPTS },
+            },
             {
               status: "RETRYABLE",
+              attemptCount: { lt: SHOPIFY_WEBHOOK_MAX_ATTEMPTS },
               OR: [
                 { lastAttemptAt: null },
                 { lastAttemptAt: { lte: retryBefore } },
               ],
             },
+            // attemptCount counts claims that began, including a claim interrupted by
+            // process death. Stale PROCESSING rows stay recoverable at any count;
+            // a caught failure on the recovered claim is still terminal at/after five.
             { status: "PROCESSING", processingStartedAt: { lte: staleBefore } },
           ],
         } satisfies Prisma.WebhookEventWhereInput;

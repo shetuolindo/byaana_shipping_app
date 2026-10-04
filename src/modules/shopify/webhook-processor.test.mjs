@@ -299,7 +299,7 @@ test("keeps existing local-order update behavior when unseen creation is disallo
 });
 
 test("keeps retryable processor failures bounded and terminal on the fifth attempt", async () => {
-  for (const attemptCount of [1, SHOPIFY_WEBHOOK_MAX_ATTEMPTS]) {
+  for (const attemptCount of [1, SHOPIFY_WEBHOOK_MAX_ATTEMPTS, SHOPIFY_WEBHOOK_MAX_ATTEMPTS + 1]) {
     const state = processorStore(event({ attemptCount }));
     const result = await processNextShopifyWebhook({
       store: state.store,
@@ -309,8 +309,8 @@ test("keeps retryable processor failures bounded and terminal on the fifth attem
       },
     });
     assert.equal(result.errorCode, "SHOPIFY_READ_FAILED");
-    assert.equal(result.outcome, attemptCount === SHOPIFY_WEBHOOK_MAX_ATTEMPTS ? "failed" : "retryable");
-    assert.equal(state.state.status, attemptCount === SHOPIFY_WEBHOOK_MAX_ATTEMPTS ? "FAILED" : "RETRYABLE");
+    assert.equal(result.outcome, attemptCount >= SHOPIFY_WEBHOOK_MAX_ATTEMPTS ? "failed" : "retryable");
+    assert.equal(state.state.status, attemptCount >= SHOPIFY_WEBHOOK_MAX_ATTEMPTS ? "FAILED" : "RETRYABLE");
   }
 });
 
@@ -337,4 +337,39 @@ test("treats an unavailable authoritative order as retryable", async () => {
   });
   assert.equal(result.outcome, "retryable");
   assert.equal(result.errorCode, "ORDER_NOT_FOUND");
+});
+
+test("does not process a retryable event before 60 seconds and processes it when eligible", async () => {
+  const lastAttemptAt = new Date("2026-10-05T00:00:00Z");
+  let claimed = false;
+  let fetches = 0;
+  const state = processorStore(null);
+  state.store.claimNext = async (_now, _staleBefore, retryBefore) => {
+    if (claimed || retryBefore < lastAttemptAt) return null;
+    claimed = true;
+    return event({ attemptCount: 2 });
+  };
+
+  const dependencies = {
+    store: state.store,
+    persistence: creationPersistence().persistence,
+    async fetchOrder() {
+      fetches += 1;
+      return normalizedOrder();
+    },
+  };
+
+  const tooEarly = await processNextShopifyWebhook(
+    dependencies,
+    new Date("2026-10-05T00:00:59.999Z"),
+  );
+  assert.equal(tooEarly.outcome, "idle");
+  assert.equal(fetches, 0);
+
+  const eligible = await processNextShopifyWebhook(
+    dependencies,
+    new Date("2026-10-05T00:01:00.000Z"),
+  );
+  assert.equal(eligible.outcome, "processed");
+  assert.equal(fetches, 1);
 });
