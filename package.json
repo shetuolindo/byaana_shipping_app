@@ -11,7 +11,8 @@
     "lint": "eslint .",
     "db:seed": "node --experimental-strip-types prisma/seed.ts",
     "shopify:diagnose": "node --env-file=.env --experimental-strip-types scripts/diagnose-shopify-orders.ts",
-    "shopify:import": "node --env-file=.env --experimental-strip-types scripts/import-shopify-orders.ts"
+    "shopify:import": "node --env-file=.env --experimental-strip-types scripts/import-shopify-orders.ts",
+    "shopify:webhooks:process": "node --env-file=.env --experimental-strip-types scripts/process-shopify-webhooks.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.12.0",

@@ -18,7 +18,7 @@ const shopifyLineItemSchema = z.object({
   originalUnitPriceSet: moneyBagSchema,
 });
 
-const shopifyOrderSchema = z.object({
+export const shopifyOrderSchema = z.object({
   id: z.string().startsWith("gid://shopify/Order/"),
   name: z.string().min(1),
   createdAt: z.string().datetime({ offset: true }),
@@ -119,6 +119,10 @@ export type PersistedShopifyOrderSnapshot = NormalizedShopifyOrder & {
   shopId: string | null;
   source: string;
   internalStatus: string;
+  shopifyLastSeenUpdatedAt?: string | null;
+  shopifySyncState?: "IN_SYNC" | "REVIEW_REQUIRED" | "SOURCE_DELETED" | null;
+  shopifyDeletedAt?: string | null;
+  hasShipments?: boolean;
 };
 
 export type ShopifyOrderPersistenceTransaction = {
@@ -128,6 +132,39 @@ export type ShopifyOrderPersistenceTransaction = {
 
 export type ShopifyOrderPersistence = {
   transaction<T>(operation: (transaction: ShopifyOrderPersistenceTransaction) => Promise<T>): Promise<T>;
+};
+
+export const shopifySnapshotChangeCategories = [
+  "SOURCE_STATE",
+  "FINANCIALS",
+  "CUSTOMER",
+  "ADDRESS",
+  "ITEMS",
+] as const;
+
+export type ShopifySnapshotChangeCategory = (typeof shopifySnapshotChangeCategories)[number];
+
+export type ShopifyWebhookSyncTransaction = ShopifyOrderPersistenceTransaction & {
+  recordShopifyObservation(orderId: string, order: NormalizedShopifyOrder): Promise<void>;
+  applyShopifySnapshot(
+    orderId: string,
+    order: NormalizedShopifyOrder,
+    changedCategories: ShopifySnapshotChangeCategory[],
+  ): Promise<void>;
+  recordShopifyReview(
+    orderId: string,
+    order: NormalizedShopifyOrder,
+    changedCategories: ShopifySnapshotChangeCategory[],
+  ): Promise<void>;
+  autoCancelShopifyOrder(orderId: string, expectedStatus: string): Promise<boolean>;
+};
+
+export type ShopifyWebhookSyncPersistence = {
+  transaction<T>(operation: (transaction: ShopifyWebhookSyncTransaction) => Promise<T>): Promise<T>;
+};
+
+export type ShopifyWebhookSyncOptions = {
+  createUnseen?: boolean;
 };
 
 export class ShopifyOrderIngestionError extends Error {
@@ -296,7 +333,7 @@ export function mapShopifyOrder(node: ShopifyOrderGraphqlNode): NormalizedShopif
   };
 }
 
-function canonicalOrder(order: NormalizedShopifyOrder) {
+export function canonicalShopifyOrder(order: NormalizedShopifyOrder) {
   return {
     shopifyOrderId: order.shopifyOrderId,
     orderNumber: order.orderNumber,
@@ -326,7 +363,59 @@ export function isUnchangedShopifyOrder(
   shopId: string,
 ) {
   if (existing.shopId !== shopId || existing.source !== "SHOPIFY") return false;
-  return JSON.stringify(canonicalOrder(existing)) === JSON.stringify(canonicalOrder(incoming));
+  return JSON.stringify(canonicalShopifyOrder(existing)) === JSON.stringify(canonicalShopifyOrder(incoming));
+}
+
+export function getShopifySnapshotChangeCategories(
+  existing: PersistedShopifyOrderSnapshot,
+  incoming: NormalizedShopifyOrder,
+): ShopifySnapshotChangeCategory[] {
+  const categories: ShopifySnapshotChangeCategory[] = [];
+  if (JSON.stringify({
+    orderNumber: existing.shopifyOrderNumber,
+    externalCreatedAt: existing.externalCreatedAt,
+    financialStatus: existing.shopifyFinancialStatus,
+    fulfillmentStatus: existing.shopifyFulfillmentStatus,
+    cancelledAt: existing.shopifyCancelledAt,
+    cancelReason: existing.shopifyCancelReason,
+  }) !== JSON.stringify({
+    orderNumber: incoming.shopifyOrderNumber,
+    externalCreatedAt: incoming.externalCreatedAt,
+    financialStatus: incoming.shopifyFinancialStatus,
+    fulfillmentStatus: incoming.shopifyFulfillmentStatus,
+    cancelledAt: incoming.shopifyCancelledAt,
+    cancelReason: incoming.shopifyCancelReason,
+  })) categories.push("SOURCE_STATE");
+
+  if (JSON.stringify({
+    currency: existing.currency,
+    subtotal: existing.subtotal,
+    shippingAmount: existing.shippingAmount,
+    taxAmount: existing.taxAmount,
+    totalAmount: existing.totalAmount,
+  }) !== JSON.stringify({
+    currency: incoming.currency,
+    subtotal: incoming.subtotal,
+    shippingAmount: incoming.shippingAmount,
+    taxAmount: incoming.taxAmount,
+    totalAmount: incoming.totalAmount,
+  })) categories.push("FINANCIALS");
+
+  if (JSON.stringify({
+    name: existing.customerName,
+    email: existing.customerEmail,
+    phone: existing.customerPhone,
+  }) !== JSON.stringify({
+    name: incoming.customerName,
+    email: incoming.customerEmail,
+    phone: incoming.customerPhone,
+  })) categories.push("CUSTOMER");
+
+  if (JSON.stringify(existing.address) !== JSON.stringify(incoming.address)) categories.push("ADDRESS");
+  const existingItems = [...existing.items].sort((left, right) => left.shopifyLineItemId.localeCompare(right.shopifyLineItemId));
+  const incomingItems = [...incoming.items].sort((left, right) => left.shopifyLineItemId.localeCompare(right.shopifyLineItemId));
+  if (JSON.stringify(existingItems) !== JSON.stringify(incomingItems)) categories.push("ITEMS");
+  return categories;
 }
 
 export async function persistNormalizedShopifyOrder(
@@ -343,5 +432,79 @@ export async function persistNormalizedShopifyOrder(
 
     const created = await transaction.createShopifyOrder(order, shopId);
     return { outcome: "created" as const, orderId: created.id, internalStatus: "NEW" as const };
+  });
+}
+
+export async function synchronizeNormalizedShopifyOrder(
+  order: NormalizedShopifyOrder,
+  shopId: string,
+  persistence: ShopifyWebhookSyncPersistence,
+  options: ShopifyWebhookSyncOptions = {},
+) {
+  return persistence.transaction(async (transaction) => {
+    const existing = await transaction.findByShopifyOrderId(order.shopifyOrderId);
+    if (!existing) {
+      if (options.createUnseen === false) {
+        return {
+          outcome: "skipped" as const,
+          autoCancelled: false,
+        };
+      }
+      const created = await transaction.createShopifyOrder(order, shopId);
+      const autoCancelled = order.shopifyCancelledAt !== null
+        ? await transaction.autoCancelShopifyOrder(created.id, "NEW")
+        : false;
+      return {
+        outcome: "created" as const,
+        orderId: created.id,
+        internalStatus: autoCancelled ? "CANCELLED" as const : "NEW" as const,
+        autoCancelled,
+      };
+    }
+    if (existing.shopId !== shopId || existing.source !== "SHOPIFY") throw new ShopifyOrderConflictError();
+
+    const newestObservedAt = existing.shopifyLastSeenUpdatedAt ?? existing.shopifyUpdatedAt;
+    if (newestObservedAt && new Date(order.shopifyUpdatedAt) <= new Date(newestObservedAt)) {
+      return {
+        outcome: "unchanged" as const,
+        orderId: existing.id,
+        internalStatus: existing.internalStatus,
+        autoCancelled: false,
+      };
+    }
+
+    const changedCategories = getShopifySnapshotChangeCategories(existing, order);
+    if (changedCategories.length === 0) {
+      await transaction.recordShopifyObservation(existing.id, order);
+      return {
+        outcome: "unchanged" as const,
+        orderId: existing.id,
+        internalStatus: existing.internalStatus,
+        autoCancelled: false,
+      };
+    }
+    const hasShipments = existing.hasShipments ?? false;
+    const canApplySnapshot = existing.internalStatus === "NEW" && !hasShipments;
+    const canAutoCancel = order.shopifyCancelledAt !== null
+      && ["NEW", "ON_HOLD", "READY"].includes(existing.internalStatus)
+      && !hasShipments;
+
+    if (canApplySnapshot) {
+      await transaction.applyShopifySnapshot(existing.id, order, changedCategories);
+    } else {
+      await transaction.recordShopifyReview(existing.id, order, changedCategories);
+    }
+
+    const autoCancelled = canAutoCancel
+      ? await transaction.autoCancelShopifyOrder(existing.id, existing.internalStatus)
+      : false;
+
+    return {
+      outcome: canApplySnapshot ? "updated" as const : "review_required" as const,
+      orderId: existing.id,
+      internalStatus: autoCancelled ? "CANCELLED" as const : existing.internalStatus,
+      autoCancelled,
+      changedCategories,
+    };
   });
 }

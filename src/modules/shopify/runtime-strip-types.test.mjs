@@ -6,6 +6,7 @@ import test from "node:test";
 const scripts = [
   ["import", new URL("../../../scripts/import-shopify-orders.ts", import.meta.url)],
   ["diagnostic", new URL("../../../scripts/diagnose-shopify-orders.ts", import.meta.url)],
+  ["webhook processor", new URL("../../../scripts/process-shopify-webhooks.ts", import.meta.url)],
 ];
 
 for (const [label, scriptUrl] of scripts) {

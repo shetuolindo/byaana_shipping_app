@@ -40,6 +40,12 @@ enum ShipmentStatus {
   ERROR
 }
 
+enum ShopifySyncState {
+  IN_SYNC
+  REVIEW_REQUIRED
+  SOURCE_DELETED
+}
+
 model User {
   id                 String               @id @default(cuid())
   name               String
@@ -53,15 +59,16 @@ model User {
 }
 
 model Shop {
-  id                          String    @id @default(cuid())
+  id                          String         @id @default(cuid())
   name                        String
-  shopifyShopDomain           String    @unique
+  shopifyShopDomain           String         @unique
   shopifyAccessTokenEncrypted String?
   shopifyConnectedAt          DateTime?
-  isActive                    Boolean   @default(true)
+  isActive                    Boolean        @default(true)
   orders                      Order[]
-  createdAt                   DateTime  @default(now())
-  updatedAt                   DateTime  @updatedAt
+  webhookEvents               WebhookEvent[]
+  createdAt                   DateTime       @default(now())
+  updatedAt                   DateTime       @updatedAt
 }
 
 model Order {
@@ -75,6 +82,9 @@ model Order {
   shopifyOrderNumber       String?
   externalCreatedAt        DateTime?
   shopifyUpdatedAt         DateTime?
+  shopifyLastSeenUpdatedAt DateTime?
+  shopifySyncState         ShopifySyncState?
+  shopifyDeletedAt         DateTime?
   shopifyFinancialStatus   String?
   shopifyFulfillmentStatus String?
   shopifyCancelledAt       DateTime?
@@ -221,17 +231,29 @@ model OrderStatusHistory {
 }
 
 model WebhookEvent {
-  id              String    @id @default(cuid())
-  provider        String
-  externalEventId String
-  eventType       String?
-  status          String
-  receivedAt      DateTime  @default(now())
-  processedAt     DateTime?
-  errorMessage    String?
-  payload         Json?
+  id                  String    @id @default(cuid())
+  provider            String
+  externalEventId     String
+  eventType           String?
+  status              String
+  shopId              String?
+  resourceId          String?
+  eventId             String?
+  apiVersion          String?
+  triggeredAt         DateTime?
+  processingStartedAt DateTime?
+  attemptCount        Int       @default(0)
+  lastAttemptAt       DateTime?
+  receivedAt          DateTime  @default(now())
+  processedAt         DateTime?
+  errorCode           String?
+  errorMessage        String?
+  payload             Json?
+  shop                Shop?     @relation(fields: [shopId], references: [id], onDelete: SetNull)
 
   @@unique([provider, externalEventId])
+  @@index([provider, status, receivedAt])
+  @@index([shopId, resourceId, triggeredAt])
 }
 
 model AuditLog {

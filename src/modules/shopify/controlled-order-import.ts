@@ -3,75 +3,27 @@
 import { OrderSource, OrderStatus, Prisma, type PrismaClient } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../lib/prisma.ts";
-import { SHOPIFY_REQUEST_TIMEOUT_MS } from "./constants.ts";
 import {
   CONTROLLED_SHOPIFY_DOMAIN,
-  diagnoseShopifyOrdersResponse,
-  mapShopifyOrder,
   MAX_CONTROLLED_SHOPIFY_IMPORT,
   persistNormalizedShopifyOrder,
-  recentShopifyOrdersResponseSchema,
   ShopifyOrderConflictError,
   ShopifyOrderIngestionError,
-  type NormalizedShopifyOrder,
-  type PersistedShopifyOrderSnapshot,
-  type ShopifyOrderPersistence,
-  type ShopifyOrderResponseDiagnostics,
 } from "./order-ingestion.ts";
+import { createPrismaShopifyOrderPersistence } from "./order-persistence.ts";
+import {
+  fetchRecentShopifyOrders,
+  requestRecentShopifyOrders,
+} from "./order-source.ts";
 import { decryptShopifyAccessToken, isValidShopifyTokenEncryptionKey } from "./token-encryption.ts";
+
+export { ShopifyOrderResponseError } from "./order-source.ts";
 
 const controlledImportEnvironmentSchema = z.object({
   DATABASE_URL: z.string().url(),
   SHOPIFY_API_VERSION: z.string().regex(/^\d{4}-(?:01|04|07|10)$/),
   SHOPIFY_TOKEN_ENCRYPTION_KEY: z.string().refine(isValidShopifyTokenEncryptionKey),
 });
-
-const RECENT_ORDERS_QUERY = `#graphql
-  query ControlledRecentOrders($first: Int!) {
-    shop {
-      myshopifyDomain
-    }
-    orders(first: $first, sortKey: CREATED_AT, reverse: true) {
-      nodes {
-        id
-        name
-        createdAt
-        updatedAt
-        displayFinancialStatus
-        displayFulfillmentStatus
-        cancelledAt
-        cancelReason
-        email
-        phone
-        shippingAddress {
-          name
-          company
-          phone
-          countryCodeV2
-          province
-          city
-          address1
-          address2
-          zip
-        }
-        currentSubtotalPriceSet { shopMoney { amount currencyCode } }
-        currentShippingPriceSet { shopMoney { amount currencyCode } }
-        currentTotalTaxSet { shopMoney { amount currencyCode } }
-        currentTotalPriceSet { shopMoney { amount currencyCode } }
-        lineItems(first: 250) {
-          nodes {
-            id
-            name
-            sku
-            currentQuantity
-            originalUnitPriceSet { shopMoney { amount currencyCode } }
-          }
-          pageInfo { hasNextPage }
-        }
-      }
-    }
-  }
-`;
 
 export type ControlledImportSummary = {
   requestedLimit: number;
@@ -95,16 +47,6 @@ export type ControlledImportSummary = {
     createdOrdersNotNew: number;
   };
 };
-
-export class ShopifyOrderResponseError extends ShopifyOrderIngestionError {
-  readonly diagnostics: ShopifyOrderResponseDiagnostics;
-
-  constructor(diagnostics: ShopifyOrderResponseDiagnostics) {
-    super("Shopify returned an invalid order response.");
-    this.name = "ShopifyOrderResponseError";
-    this.diagnostics = diagnostics;
-  }
-}
 
 type SanitizedShopifyCounts = {
   orders: number;
@@ -142,58 +84,6 @@ async function connectedShop(client: PrismaClient) {
   return { ...shop, shopifyAccessTokenEncrypted: shop.shopifyAccessTokenEncrypted };
 }
 
-async function requestRecentOrders(input: {
-  accessToken: string;
-  apiVersion: string;
-  limit: number;
-  fetchImplementation?: typeof fetch;
-}): Promise<{ body: unknown; diagnostics: ShopifyOrderResponseDiagnostics }> {
-  const fetchImplementation = input.fetchImplementation ?? fetch;
-  let response: Response;
-  try {
-    response = await fetchImplementation(
-      `https://${CONTROLLED_SHOPIFY_DOMAIN}/admin/api/${input.apiVersion}/graphql.json`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": input.accessToken,
-        },
-        body: JSON.stringify({ query: RECENT_ORDERS_QUERY, variables: { first: input.limit } }),
-        signal: AbortSignal.timeout(SHOPIFY_REQUEST_TIMEOUT_MS),
-      },
-    );
-  } catch {
-    throw new ShopifyOrderIngestionError("Shopify orders could not be read.");
-  }
-  const body: unknown = await response.json().catch(() => null);
-  return { body, diagnostics: diagnoseShopifyOrdersResponse(body, response.ok) };
-}
-
-async function fetchRecentOrders(input: {
-  accessToken: string;
-  apiVersion: string;
-  limit: number;
-  fetchImplementation?: typeof fetch;
-}) {
-  const result = await requestRecentOrders(input);
-  if (!result.diagnostics.graphqlHttpSuccess) {
-    throw new ShopifyOrderResponseError(result.diagnostics);
-  }
-  const parsed = recentShopifyOrdersResponseSchema.safeParse(result.body);
-  if (!parsed.success || parsed.data.errors?.length) {
-    throw new ShopifyOrderResponseError(result.diagnostics);
-  }
-  if (parsed.data.data.shop.myshopifyDomain.toLowerCase() !== CONTROLLED_SHOPIFY_DOMAIN) {
-    throw new ShopifyOrderIngestionError("Shopify returned a different shop identity.");
-  }
-  if (parsed.data.data.orders.nodes.length > input.limit) {
-    throw new ShopifyOrderIngestionError("Shopify returned more orders than the requested controlled limit.");
-  }
-  return parsed.data.data.orders.nodes.map(mapShopifyOrder);
-}
-
 async function controlledContext() {
   const env = environment();
   assertLocalDatabase(env.DATABASE_URL);
@@ -211,173 +101,12 @@ export async function runControlledShopifyDiagnostics(limit: number) {
     throw new ShopifyOrderIngestionError(`The diagnostic limit must be between 1 and ${MAX_CONTROLLED_SHOPIFY_IMPORT}.`);
   }
   const context = await controlledContext();
-  return (await requestRecentOrders({
+  return (await requestRecentShopifyOrders({
+    shopDomain: context.shop.shopifyShopDomain,
     accessToken: context.accessToken,
     apiVersion: context.env.SHOPIFY_API_VERSION,
     limit,
   })).diagnostics;
-}
-
-function persistenceFor(client: PrismaClient): ShopifyOrderPersistence {
-  return {
-    transaction: (operation) => client.$transaction(async (tx) => operation({
-      async findByShopifyOrderId(shopifyOrderId): Promise<PersistedShopifyOrderSnapshot | null> {
-        const existing = await tx.order.findUnique({
-          where: { shopifyOrderId },
-          select: {
-            id: true,
-            shopId: true,
-            source: true,
-            internalStatus: true,
-            shopifyOrderId: true,
-            orderNumber: true,
-            shopifyOrderNumber: true,
-            externalCreatedAt: true,
-            shopifyUpdatedAt: true,
-            shopifyFinancialStatus: true,
-            shopifyFulfillmentStatus: true,
-            shopifyCancelledAt: true,
-            shopifyCancelReason: true,
-            customerName: true,
-            customerEmail: true,
-            customerPhone: true,
-            currency: true,
-            subtotal: true,
-            shippingAmount: true,
-            taxAmount: true,
-            totalAmount: true,
-            address: {
-              select: {
-                name: true,
-                company: true,
-                phone: true,
-                email: true,
-                countryCode: true,
-                province: true,
-                city: true,
-                district: true,
-                address1: true,
-                address2: true,
-                postalCode: true,
-              },
-            },
-            items: {
-              select: {
-                shopifyLineItemId: true,
-                sku: true,
-                name: true,
-                quantity: true,
-                unitPrice: true,
-              },
-            },
-          },
-        });
-        if (!existing || !existing.shopifyOrderId || !existing.shopifyOrderNumber || !existing.externalCreatedAt
-          || !existing.shopifyUpdatedAt || !existing.shopifyFulfillmentStatus
-          || !existing.currency || !existing.subtotal || !existing.shippingAmount || !existing.taxAmount
-          || !existing.totalAmount || !existing.address
-          || existing.items.some((item) => !item.shopifyLineItemId || !item.unitPrice)) {
-          return existing ? incompatibleExistingSnapshot(existing) : null;
-        }
-        return {
-          id: existing.id,
-          shopId: existing.shopId,
-          source: existing.source,
-          internalStatus: existing.internalStatus,
-          shopifyOrderId: existing.shopifyOrderId,
-          orderNumber: existing.orderNumber,
-          shopifyOrderNumber: existing.shopifyOrderNumber,
-          externalCreatedAt: existing.externalCreatedAt.toISOString(),
-          shopifyUpdatedAt: existing.shopifyUpdatedAt.toISOString(),
-          shopifyFinancialStatus: existing.shopifyFinancialStatus,
-          shopifyFulfillmentStatus: existing.shopifyFulfillmentStatus,
-          shopifyCancelledAt: existing.shopifyCancelledAt?.toISOString() ?? null,
-          shopifyCancelReason: existing.shopifyCancelReason,
-          customerName: existing.customerName,
-          customerEmail: existing.customerEmail,
-          customerPhone: existing.customerPhone,
-          currency: existing.currency,
-          subtotal: existing.subtotal.toFixed(2),
-          shippingAmount: existing.shippingAmount.toFixed(2),
-          taxAmount: existing.taxAmount.toFixed(2),
-          totalAmount: existing.totalAmount.toFixed(2),
-          address: existing.address,
-          items: existing.items.map((item) => ({
-            shopifyLineItemId: item.shopifyLineItemId!,
-            sku: item.sku,
-            name: item.name,
-            quantity: item.quantity,
-            unitPrice: item.unitPrice!.toFixed(2),
-          })),
-        };
-      },
-      async createShopifyOrder(order: NormalizedShopifyOrder, shopId: string) {
-        const created = await tx.order.create({
-          data: {
-            orderNumber: order.orderNumber,
-            shopId,
-            source: OrderSource.SHOPIFY,
-            internalStatus: OrderStatus.NEW,
-            shopifyOrderId: order.shopifyOrderId,
-            shopifyOrderNumber: order.shopifyOrderNumber,
-            externalCreatedAt: new Date(order.externalCreatedAt),
-            shopifyUpdatedAt: new Date(order.shopifyUpdatedAt),
-            shopifyFinancialStatus: order.shopifyFinancialStatus,
-            shopifyFulfillmentStatus: order.shopifyFulfillmentStatus,
-            shopifyCancelledAt: order.shopifyCancelledAt ? new Date(order.shopifyCancelledAt) : null,
-            shopifyCancelReason: order.shopifyCancelReason,
-            customerName: order.customerName,
-            customerEmail: order.customerEmail,
-            customerPhone: order.customerPhone,
-            currency: order.currency,
-            subtotal: new Prisma.Decimal(order.subtotal),
-            shippingAmount: new Prisma.Decimal(order.shippingAmount),
-            taxAmount: new Prisma.Decimal(order.taxAmount),
-            totalAmount: new Prisma.Decimal(order.totalAmount),
-            address: { create: order.address },
-            items: {
-              create: order.items.map((item) => ({
-                shopifyLineItemId: item.shopifyLineItemId,
-                sku: item.sku,
-                name: item.name,
-                quantity: item.quantity,
-                unitPrice: new Prisma.Decimal(item.unitPrice),
-              })),
-            },
-            statusHistory: {
-              create: {
-                toStatus: OrderStatus.NEW,
-                reason: "Shopify order imported",
-              },
-            },
-          },
-          select: { id: true },
-        });
-        await tx.auditLog.create({
-          data: {
-            action: "SHOPIFY_ORDER_IMPORTED",
-            entityType: "Order",
-            entityId: created.id,
-            metadata: {
-              source: "SHOPIFY",
-              shopifyOrderId: order.shopifyOrderId,
-              shopifyShopDomain: CONTROLLED_SHOPIFY_DOMAIN,
-            },
-          },
-        });
-        return created;
-      },
-    })),
-  };
-}
-
-function incompatibleExistingSnapshot(existing: { id: string; shopId: string | null; source: string; internalStatus: string }) {
-  return {
-    id: existing.id,
-    shopId: existing.shopId,
-    source: "INCOMPATIBLE",
-    internalStatus: existing.internalStatus,
-  } as PersistedShopifyOrderSnapshot;
 }
 
 async function sanitizedCounts(client: PrismaClient, shopId: string): Promise<SanitizedShopifyCounts> {
@@ -427,7 +156,12 @@ export async function runControlledShopifyImport(limit: number): Promise<Control
   }
   const context = await controlledContext();
   const { env, shop, accessToken } = context;
-  const orders = await fetchRecentOrders({ accessToken, apiVersion: env.SHOPIFY_API_VERSION, limit });
+  const { orders } = await fetchRecentShopifyOrders({
+    shopDomain: shop.shopifyShopDomain,
+    accessToken,
+    apiVersion: env.SHOPIFY_API_VERSION,
+    limit,
+  });
   const before = await sanitizedCounts(prisma, shop.id);
   const summary: ControlledImportSummary = {
     requestedLimit: limit,
@@ -451,7 +185,7 @@ export async function runControlledShopifyImport(limit: number): Promise<Control
       createdOrdersNotNew: 0,
     },
   };
-  const persistence = persistenceFor(prisma);
+  const persistence = createPrismaShopifyOrderPersistence(prisma);
   const processedOrderIds: string[] = [];
 
   for (const order of orders) {
